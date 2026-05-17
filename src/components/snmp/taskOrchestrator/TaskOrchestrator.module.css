@@ -1,0 +1,217 @@
+.container {
+  width: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border-color);
+}
+
+.header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.headerTitle {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.headerControls {
+  display: flex;
+  gap: 6px;
+}
+
+.modeSelect {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  width: 7.5rem;
+}
+
+.runBtn {
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.taskList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.emptyState {
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 20px;
+  font-size: 0.85rem;
+}
+
+.taskCard {
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.taskCardEnabled {
+  opacity: 1;
+  border-color: var(--separator);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.taskCardDisabled {
+  opacity: 0.6;
+  border-color: var(--border-color);
+  box-shadow: none;
+}
+
+.taskHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.taskTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.taskCheckbox {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-primary);
+}
+
+.taskNameInput {
+  background: transparent;
+  border: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--label-primary);
+  padding: 2px 4px;
+  width: 100%;
+  border-radius: 4px;
+  outline: none;
+}
+
+.taskHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.actionAddBtn {
+  padding: 4px;
+  color: var(--accent-primary);
+}
+
+.actionDeleteBtn {
+  padding: 4px;
+  color: var(--danger);
+}
+
+.leavesList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-left: 2px solid var(--border-color);
+  padding-left: 10px;
+  margin-left: 6px;
+}
+
+.leafEmptyState {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.leafRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.01);
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.leafControls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.leafOpSelect {
+  width: 70px !important;
+  flex-shrink: 0;
+  padding: 3px;
+  font-size: 0.75rem;
+  height: 24px;
+}
+
+.leafOidInput {
+  flex: 1;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  height: 24px;
+}
+
+.leafRemoveBtn {
+  color: var(--text-muted);
+  padding: 3px;
+}
+
+.leafSetConfigRow {
+  display: flex;
+  gap: 6px;
+  margin-left: 2px;
+}
+
+.leafValueInput {
+  flex: 1;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  height: 24px;
+}
+
+.leafValueTypeSelect {
+  width: 70px !important;
+  flex-shrink: 0;
+  padding: 3px;
+  font-size: 0.75rem;
+  height: 24px;
+}
+
+.leafResult {
+  font-size: 0.7rem;
+  padding: 5px 8px;
+  border-radius: 4px;
+  word-break: break-all;
+  font-family: var(--term-font);
+}
+
+.leafResultSuccess {
+  background: rgba(48, 209, 88, 0.08);
+  color: var(--success);
+  border: 1px solid rgba(48, 209, 88, 0.15);
+}
+
+.leafResultError {
+  background: rgba(255, 69, 58, 0.08);
+  color: var(--danger);
+  border: 1px solid rgba(255, 69, 58, 0.15);
+}

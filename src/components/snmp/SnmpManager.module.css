@@ -1,0 +1,39 @@
+.container {
+  height: 100%;
+  flex: 1;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.headerTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.headerIcon {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+}
+
+.headerTitle {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.bodyLayout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}

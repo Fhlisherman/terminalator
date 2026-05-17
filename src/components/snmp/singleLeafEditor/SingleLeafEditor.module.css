@@ -1,0 +1,85 @@
+.container {
+  padding: 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.oidInput {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.valueRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.valueInput {
+  flex: 1;
+}
+
+.typeSelect {
+  width: 90px !important;
+  flex-shrink: 0;
+}
+
+.btnRow {
+  display: flex;
+  gap: 8px;
+}
+
+.getBtn {
+  flex: 1;
+  padding: 6px;
+}
+
+.setBtn {
+  flex: 1;
+  padding: 6px;
+  transition: all var(--t-fast);
+}
+
+.setBtnMutable {
+  background: var(--danger);
+  color: white;
+  cursor: pointer;
+  opacity: 1;
+  border: none;
+}
+
+.setBtnMutable:hover {
+  filter: brightness(1.1);
+}
+
+.setBtnImmutable {
+  background: var(--bg-tertiary);
+  color: var(--label-tertiary);
+  cursor: not-allowed;
+  opacity: 0.45;
+  border: 1px solid var(--border-color);
+}
+
+.resultBox {
+  margin-top: 10px;
+  font-size: 0.75rem;
+  padding: 8px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.resultBoxSuccess {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
+}
+
+.resultBoxError {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+}
