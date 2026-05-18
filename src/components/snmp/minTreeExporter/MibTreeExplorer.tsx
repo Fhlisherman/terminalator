@@ -38,8 +38,6 @@ export const MibTreeExplorer: React.FC<MibTreeExplorerProps> = ({
             value={searchInputValue}
             onChange={e => onChangeSearchInput(e.target.value)}
           />
-
-          {/* Status Indicator / Found count Badge */}
           {treeData.length > 0 && (
             <div className={styles.badgeContainer}>
               <span

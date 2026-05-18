@@ -65,7 +65,6 @@ export default function SnmpManager({ initialCreds }: { initialCreds?: any }) {
     return [];
   });
 
-  // Reactively auto-persist SNMP walked tree & orchestrator tasks list back to the saved session
   React.useEffect(() => {
     if (!initialCreds?.savedSessionId) return;
     const loaded = localStorage.getItem('terminalator_sessions');
@@ -336,7 +335,8 @@ export default function SnmpManager({ initialCreds }: { initialCreds?: any }) {
 
   const filteredTree = useMemo(() => {
     if (!searchDebouncedValue) return treeData;
-    const lower = searchDebouncedValue.toLowerCase();
+    const lower = searchDebouncedValue.toLowerCase();  
+      
     return treeData.filter(item => item.oid.toLowerCase().includes(lower) || item.value.toLowerCase().includes(lower));
   }, [treeData, searchDebouncedValue]);
 
