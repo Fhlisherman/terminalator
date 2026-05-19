@@ -337,7 +337,17 @@ export default function SnmpManager({ initialCreds }: { initialCreds?: any }) {
     if (!searchDebouncedValue) return treeData;
     const lower = searchDebouncedValue.toLowerCase();  
       
-    return treeData.filter(item => item.oid.toLowerCase().includes(lower) || item.value.toLowerCase().includes(lower));
+    return treeData.filter(item => {
+      const props = getOidProperties(item);
+      const mutability = props.isMutable ? 'mutable' : 'immutable';
+      return (
+        props.name.toLowerCase().includes(lower) ||
+        props.numericOid.toLowerCase().includes(lower) ||
+        props.symbolicOid.toLowerCase().includes(lower) ||
+        item.value.toLowerCase().includes(lower) ||
+        mutability.includes(lower)
+      );
+    });
   }, [treeData, searchDebouncedValue]);
 
   const handleSelectOid = (numericOid: string, isMutable: boolean, val: string) => {

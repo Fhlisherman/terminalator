@@ -26,7 +26,7 @@ export default function Terminal({ sessionId }: Props) {
     const term = new XTerm({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontFamily: `'${settings.termFont}', Menlo, Monaco, 'Courier New', monospace`,
+      fontFamily: "'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace",
       fontSize: settings.termFontSize,
       lineHeight: 1.4,
       theme: termTheme,
@@ -82,21 +82,16 @@ export default function Terminal({ sessionId }: Props) {
     const fit  = fitRef.current;
     if (!term || !fit) return;
 
-    const fontSpec = `${settings.termFontSize}px '${settings.termFont}'`;
+    term.options.fontFamily = "'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace";
+    term.options.fontSize   = settings.termFontSize;
+    term.options.theme      = TERMINAL_THEMES[settings.appTheme] ?? TERMINAL_THEMES.dark;
 
-    // Ensure the font is loaded by the browser before telling xterm to use it
-    document.fonts.load(fontSpec).then(() => {
-      term.options.fontFamily = `'${settings.termFont}', Menlo, Monaco, 'Courier New', monospace`;
-      term.options.fontSize   = settings.termFontSize;
-      term.options.theme      = TERMINAL_THEMES[settings.appTheme] ?? TERMINAL_THEMES.dark;
-
-      // Give the browser one frame to measure the new glyph dimensions
-      requestAnimationFrame(() => {
-        fit.fit();
-        invoke('terminal_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(console.error);
-      });
+    // Give the browser one frame to measure the new glyph dimensions
+    requestAnimationFrame(() => {
+      fit.fit();
+      invoke('terminal_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(console.error);
     });
-  }, [settings.termFont, settings.termFontSize, settings.appTheme, sessionId]);
+  }, [settings.termFontSize, settings.appTheme, sessionId]);
 
   return <div className="terminal-container" ref={terminalRef} />;
 }

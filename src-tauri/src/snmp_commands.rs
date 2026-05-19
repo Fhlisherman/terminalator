@@ -43,22 +43,61 @@ pub struct WalkResult {
 // ── Session Builder ───────────────────────────────────────────────────────────
 
 fn create_session(creds: &SnmpCreds) -> Result<SyncSession, String> {
-    if creds.version == "3" {
-        return Err("SNMPv3 is not supported by the synchronous 'snmp' crate. Please use v1 or v2c.".to_string());
-    }
-
     let target = format!("{}:{}", creds.target, creds.port);
-    let community = creds.community.clone().unwrap_or_else(|| "public".to_string());
     let timeout = Duration::from_secs(5);
     
     log::info!("[SNMP] connecting to {} version={}", target, creds.version);
 
-    if creds.version == "1" {
-        SyncSession::new_v1(&target, community.as_bytes(), Some(timeout), 3)
-            .map_err(|e| format!("Failed to create SNMP session: {:?}", e))
+    if creds.version == "3" {
+        use snmp2::v3;
+
+        let username = creds.username.as_deref().unwrap_or("");
+        let auth_password = creds.auth_password.as_deref().unwrap_or("");
+
+        let mut security = v3::Security::new(username.as_bytes(), auth_password.as_bytes());
+
+        // Configure Auth Protocol
+        let auth_proto = match creds.auth_protocol.as_deref().unwrap_or("SHA") {
+            "MD5" => v3::AuthProtocol::Md5,
+            _ => v3::AuthProtocol::Sha1,
+        };
+        security = security.with_auth_protocol(auth_proto);
+
+        // Configure Auth/Priv
+        let sec_level = creds.sec_level.as_deref().unwrap_or("noAuthNoPriv");
+        let auth = match sec_level {
+            "authPriv" => {
+                let priv_proto = creds.priv_protocol.as_deref().unwrap_or("AES");
+                let cipher = match priv_proto {
+                    "DES" => v3::Cipher::Des,
+                    _ => v3::Cipher::Aes128,
+                };
+                let priv_password = creds.priv_password.as_deref().unwrap_or("").as_bytes().to_vec();
+                v3::Auth::AuthPriv { cipher, privacy_password: priv_password }
+            }
+            "authNoPriv" => v3::Auth::AuthNoPriv,
+            _ => v3::Auth::NoAuthNoPriv,
+        };
+        security = security.with_auth(auth);
+
+        let mut session = SyncSession::new_v3(
+            &target,
+            Some(timeout),
+            3,
+            security,
+        ).map_err(|e| format!("Failed to create SNMPv3 session: {:?}", e))?;
+
+        session.init().map_err(|e| format!("Failed to initialize SNMPv3 session: {:?}", e))?;
+        Ok(session)
     } else {
-        SyncSession::new_v2c(&target, community.as_bytes(), Some(timeout), 3)
-            .map_err(|e| format!("Failed to create SNMP session: {:?}", e))
+        let community = creds.community.clone().unwrap_or_else(|| "public".to_string());
+        if creds.version == "1" {
+            SyncSession::new_v1(&target, community.as_bytes(), Some(timeout), 3)
+                .map_err(|e| format!("Failed to create SNMP session: {:?}", e))
+        } else {
+            SyncSession::new_v2c(&target, community.as_bytes(), Some(timeout), 3)
+                .map_err(|e| format!("Failed to create SNMP session: {:?}", e))
+        }
     }
 }
 
@@ -147,6 +186,7 @@ fn format_snmp_value(value: &Value) -> String {
 }
 
 // Intermediary struct to own memory for SET requests before borrowing into `snmp2::Value`
+#[allow(dead_code)]
 enum OwnedSnmpValue {
     Integer(i64),
     OctetString(Vec<u8>),
@@ -229,327 +269,331 @@ fn udp_raw_probe(target: &str, port: u16, community: &str) -> Result<usize, Stri
 
 #[tauri::command]
 pub async fn snmp_connect_and_walk(creds: SnmpCreds, root_oid: String) -> WalkResult {
-    tokio::task::spawn_blocking(move || {
-        log::info!("[SNMP] walk → target={} port={} ver={} oid={}", creds.target, creds.port, creds.version, root_oid);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    
+    std::thread::Builder::new()
+        .name("snmp-walk-thread".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let res = (move || {
+                log::info!("[SNMP] walk → target={} port={} ver={} oid={}", creds.target, creds.port, creds.version, root_oid);
 
-        let community = creds.community.clone().unwrap_or_else(|| "public".to_string());
-        if let Err(e) = udp_raw_probe(&creds.target, creds.port, &community) {
-            log::error!("[SNMP] raw probe FAILED: {}", e);
-            return WalkResult { success: false, results: vec![], error: Some(format!("UDP probe failed: {}", e)) };
-        }
-
-        let parsed_root_oid = match parse_oid(&root_oid) {
-            Ok(o) => o,
-            Err(e) => return WalkResult { success: false, results: vec![], error: Some(e) },
-        };
-
-        let mut session = match create_session(&creds) {
-            Ok(s) => s,
-            Err(e) => return WalkResult { success: false, results: vec![], error: Some(e) },
-        };
-
-        let mut results = Vec::new();
-        let mut current_oid = parsed_root_oid.clone();
-        let mut count = 0usize;
-
-        log::info!("[SNMP] starting synchronous GETNEXT walk loop...");
-
-        loop {
-            // Unwrapping result gracefully
-            let target_oid = match Oid::from(&current_oid[..]) {
-                Ok(o) => o,
-                Err(_) => {
-                    log::error!("[SNMP] Invalid internal OID format. Stopping walk.");
-                    break;
-                }
-            };
-
-            match session.getnext(&target_oid) {
-                Ok(mut response) => {
-                    if let Some((resp_oid, value)) = response.varbinds.next() {
-                        let oid_vec = oid_to_vec(&resp_oid);
-
-                        // Break if we infinite loop (agent returns exact same OID)
-                        if oid_vec == current_oid {
-                            break;
-                        }
-
-                        // Break if we stepped completely outside the root OID tree
-                        if !parsed_root_oid.is_empty() && !oid_vec.starts_with(&parsed_root_oid) {
-                            break;
-                        }
-
-                        let oid_str = format_oid(&oid_vec);
-                        let val_str = format_snmp_value(&value);
-                        
-                        count += 1;
-                        if count <= 5 || count % 50 == 0 { log::info!("[SNMP] varbind #{}: {}", count, oid_str); }
-
-                        results.push(SnmpResult { success: true, oid: oid_str, value: val_str, error: None });
-                        current_oid = oid_vec;
-                    } else {
-                        break; // No varbinds returned
+                if creds.version != "3" {
+                    let community = creds.community.clone().unwrap_or_else(|| "public".to_string());
+                    if let Err(e) = udp_raw_probe(&creds.target, creds.port, &community) {
+                        log::error!("[SNMP] raw probe FAILED: {}", e);
+                        return Err(format!("UDP probe failed: {}", e));
                     }
                 }
-                Err(e) => {
-                    log::error!("[SNMP] GETNEXT error: {:?}", e);
-                    return WalkResult { success: false, results, error: Some(format!("Walk error: {:?}", e)) };
+
+                let parsed_root_oid = parse_oid(&root_oid)?;
+                let mut session = create_session(&creds)?;
+
+                let mut results = Vec::new();
+                let mut current_oid = parsed_root_oid.clone();
+                let mut count = 0usize;
+
+                log::info!("[SNMP] starting synchronous GETNEXT walk loop...");
+
+                loop {
+                    let target_oid = Oid::from(&current_oid[..]).map_err(|e| format!("Invalid OID: {:?}", e))?;
+
+                    match session.getnext(&target_oid) {
+                        Ok(mut response) => {
+                            if let Some((resp_oid, value)) = response.varbinds.next() {
+                                let oid_vec = oid_to_vec(&resp_oid);
+
+                                if oid_vec == current_oid {
+                                    break;
+                                }
+
+                                if !parsed_root_oid.is_empty() && !oid_vec.starts_with(&parsed_root_oid) {
+                                    break;
+                                }
+
+                                let oid_str = format_oid(&oid_vec);
+                                let val_str = format_snmp_value(&value);
+                                
+                                count += 1;
+                                if count <= 5 || count % 50 == 0 { log::info!("[SNMP] varbind #{}: {}", count, oid_str); }
+
+                                results.push(SnmpResult { success: true, oid: oid_str, value: val_str, error: None });
+                                current_oid = oid_vec;
+                            } else {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[SNMP] GETNEXT error: {:?}", e);
+                            return Err(format!("Walk error: {:?}", e));
+                        }
+                    }
                 }
-            }
-        }
 
-        log::info!("[SNMP] walk complete — {} varbinds", count);
-        WalkResult { success: true, results, error: None }
+                log::info!("[SNMP] walk complete — {} varbinds", count);
+                Ok(results)
+            })();
 
-    }).await.unwrap_or_else(|e| WalkResult { success: false, results: vec![], error: Some(format!("Tokio error: {:?}", e)) })
+            let walk_res = match res {
+                Ok(results) => WalkResult { success: true, results, error: None },
+                Err(e) => WalkResult { success: false, results: vec![], error: Some(e) },
+            };
+            let _ = tx.send(walk_res);
+        })
+        .expect("Failed to spawn SNMP walk thread");
+
+    rx.await.unwrap_or_else(|e| WalkResult { success: false, results: vec![], error: Some(format!("Thread communication error: {:?}", e)) })
 }
 
 #[tauri::command]
 pub async fn snmp_get(creds: SnmpCreds, oid: String) -> SnmpResult {
     let fallback_oid = oid.clone();
+    let fallback_oid_thread = oid.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
     
-    tokio::task::spawn_blocking(move || {
-        let parsed_oid = match parse_oid(&oid) {
-            Ok(o) => o,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(e) },
-        };
-
-        let mut session = match create_session(&creds) {
-            Ok(s) => s,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(e) },
-        };
-
-        let target_oid = match Oid::from(&parsed_oid[..]) {
-            Ok(o) => o,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(format!("Invalid OID: {:?}", e)) },
-        };
-
-        match session.get(&target_oid) {
-            Ok(mut response) => {
-                if let Some((resp_oid, value)) = response.varbinds.next() {
-                    let oid_vec = oid_to_vec(&resp_oid);
-                    SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None }
-                } else {
-                    SnmpResult { success: false, oid, value: String::new(), error: Some("No varbinds returned".to_string()) }
+    std::thread::Builder::new()
+        .name("snmp-get-thread".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let res = (move || {
+                let parsed_oid = parse_oid(&oid)?;
+                let mut session = create_session(&creds)?;
+                let target_oid = Oid::from(&parsed_oid[..]).map_err(|e| format!("Invalid OID: {:?}", e))?;
+                match session.get(&target_oid) {
+                    Ok(mut response) => {
+                        if let Some((resp_oid, value)) = response.varbinds.next() {
+                            let oid_vec = oid_to_vec(&resp_oid);
+                            Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None })
+                        } else {
+                            Err("No varbinds returned".to_string())
+                        }
+                    }
+                    Err(e) => Err(format!("{:?}", e)),
                 }
-            }
-            Err(e) => SnmpResult { success: false, oid, value: String::new(), error: Some(format!("{:?}", e)) },
-        }
-    }).await.unwrap_or_else(|e| SnmpResult { success: false, oid: fallback_oid, value: String::new(), error: Some(format!("Tokio error: {:?}", e)) })
+            })();
+            
+            let snmp_res = match res {
+                Ok(r) => r,
+                Err(e) => SnmpResult { success: false, oid: fallback_oid_thread, value: String::new(), error: Some(e) },
+            };
+            let _ = tx.send(snmp_res);
+        })
+        .expect("Failed to spawn SNMP get thread");
+        
+    rx.await.unwrap_or_else(|e| SnmpResult { success: false, oid: fallback_oid, value: String::new(), error: Some(format!("Thread communication error: {:?}", e)) })
 }
 
 #[tauri::command]
 pub async fn snmp_set(creds: SnmpCreds, oid: String, value: String, value_type: String) -> SnmpResult {
     let fallback_oid = oid.clone();
+    let fallback_oid_thread = oid.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    
+    std::thread::Builder::new()
+        .name("snmp-set-thread".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let res = (move || {
+                let parsed_oid = parse_oid(&oid)?;
+                let owned_val = parse_owned_value(&value_type, &value)?;
+                let mut session = create_session(&creds)?;
 
-    tokio::task::spawn_blocking(move || {
-        let parsed_oid = match parse_oid(&oid) {
-            Ok(o) => o,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(e) },
-        };
+                let snmp_val = match &owned_val {
+                    OwnedSnmpValue::Integer(i) => Value::Integer(*i),
+                    OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
+                    OwnedSnmpValue::ObjectIdentifier(_) => {
+                        return Err("SET of ObjectIdentifier is unsupported".to_string())
+                    },
+                    OwnedSnmpValue::Null => Value::Null,
+                    OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
+                    OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
+                    OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
+                    OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
+                };
 
-        let owned_val = match parse_owned_value(&value_type, &value) {
-            Ok(v) => v,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(e) },
-        };
-
-        let mut session = match create_session(&creds) {
-            Ok(s) => s,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(e) },
-        };
-
-        let snmp_val = match &owned_val {
-            OwnedSnmpValue::Integer(i) => Value::Integer(*i),
-            OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
-            OwnedSnmpValue::ObjectIdentifier(_) => {
-                return SnmpResult { success: false, oid, value: String::new(), error: Some("SET of ObjectIdentifier is unsupported".to_string()) }
-            },
-            OwnedSnmpValue::Null => Value::Null,
-            OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
-            OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
-            OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
-            OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
-        };
-
-        let target_oid = match Oid::from(&parsed_oid[..]) {
-            Ok(o) => o,
-            Err(e) => return SnmpResult { success: false, oid, value: String::new(), error: Some(format!("Invalid OID: {:?}", e)) },
-        };
-
-        match session.set(&[(&target_oid, snmp_val)]) {
-            Ok(mut response) => {
-                if let Some((resp_oid, val)) = response.varbinds.next() {
-                    let oid_vec = oid_to_vec(&resp_oid);
-                    SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None }
-                } else {
-                    SnmpResult { success: false, oid, value: String::new(), error: Some("No varbinds returned on SET".to_string()) }
+                let target_oid = Oid::from(&parsed_oid[..]).map_err(|e| format!("Invalid OID: {:?}", e))?;
+                match session.set(&[(&target_oid, snmp_val)]) {
+                    Ok(mut response) => {
+                        if let Some((resp_oid, val)) = response.varbinds.next() {
+                            let oid_vec = oid_to_vec(&resp_oid);
+                            Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None })
+                        } else {
+                            Err("No varbinds returned on SET".to_string())
+                        }
+                    }
+                    Err(e) => Err(format!("{:?}", e)),
                 }
-            }
-            Err(e) => SnmpResult { success: false, oid, value: String::new(), error: Some(format!("{:?}", e)) },
-        }
-    }).await.unwrap_or_else(|e| SnmpResult { success: false, oid: fallback_oid, value: String::new(), error: Some(format!("Tokio error: {:?}", e)) })
+            })();
+            
+            let snmp_res = match res {
+                Ok(r) => r,
+                Err(e) => SnmpResult { success: false, oid: fallback_oid_thread, value: String::new(), error: Some(e) },
+            };
+            let _ = tx.send(snmp_res);
+        })
+        .expect("Failed to spawn SNMP set thread");
+        
+    rx.await.unwrap_or_else(|e| SnmpResult { success: false, oid: fallback_oid, value: String::new(), error: Some(format!("Thread communication error: {:?}", e)) })
 }
 
 #[tauri::command]
 pub async fn snmp_run_batch(creds: SnmpCreds, tasks: Vec<SnmpTask>, mode: String) -> Vec<SnmpResult> {
     if mode == "parallel" {
-        let mut handles = vec![];
+        let mut join_handles = vec![];
         for task in tasks {
             let creds_clone = creds.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
             
-            let handle = tokio::task::spawn_blocking(move || {
-                let mut session = match create_session(&creds_clone) {
-                    Ok(s) => s,
-                    Err(e) => return SnmpResult { success: false, oid: task.oid.clone(), value: String::new(), error: Some(e) },
-                };
-                
-                let parsed_oid = match parse_oid(&task.oid) {
-                    Ok(o) => o,
-                    Err(e) => return SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e) },
-                };
-                
-                let target_oid = match Oid::from(&parsed_oid[..]) {
-                    Ok(o) => o,
-                    Err(e) => return SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("Invalid OID: {:?}", e)) },
-                };
-
-                if task.operation.to_uppercase() == "GET" {
-                    match session.get(&target_oid) {
-                        Ok(mut response) => {
-                            if let Some((resp_oid, value)) = response.varbinds.next() {
-                                let oid_vec = oid_to_vec(&resp_oid);
-                                SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None }
-                            } else {
-                                SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("No varbinds".to_string()) }
+            std::thread::Builder::new()
+                .name(format!("snmp-batch-{}", task.oid))
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    let task_oid = task.oid.clone();
+                    let res = (move || {
+                        let mut session = create_session(&creds_clone)?;
+                        let parsed_oid = parse_oid(&task.oid)?;
+                        let target_oid = Oid::from(&parsed_oid[..]).map_err(|e| format!("Invalid OID: {:?}", e))?;
+                        
+                        if task.operation.to_uppercase() == "GET" {
+                            match session.get(&target_oid) {
+                                Ok(mut response) => {
+                                    if let Some((resp_oid, value)) = response.varbinds.next() {
+                                        let oid_vec = oid_to_vec(&resp_oid);
+                                        Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None })
+                                    } else {
+                                        Err("No varbinds".to_string())
+                                    }
+                                }
+                                Err(e) => Err(format!("{:?}", e)),
                             }
-                        }
-                        Err(e) => SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("{:?}", e)) },
-                    }
-                } else if task.operation.to_uppercase() == "SET" {
-                    let owned_val = match parse_owned_value(&task.value_type.unwrap_or_else(|| "s".to_string()), &task.value.unwrap_or_default()) {
-                        Ok(v) => v,
-                        Err(e) => return SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e) },
-                    };
-                    
-                    let snmp_val = match &owned_val {
-                        OwnedSnmpValue::Integer(i) => Value::Integer(*i),
-                        OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
-                        OwnedSnmpValue::ObjectIdentifier(_) => {
-                            return SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("SET of ObjectIdentifier is unsupported".to_string()) }
-                        },
-                        OwnedSnmpValue::Null => Value::Null,
-                        OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
-                        OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
-                        OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
-                        OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
-                    };
+                        } else if task.operation.to_uppercase() == "SET" {
+                            let owned_val = parse_owned_value(&task.value_type.unwrap_or_else(|| "s".to_string()), &task.value.unwrap_or_default())?;
+                            let snmp_val = match &owned_val {
+                                OwnedSnmpValue::Integer(i) => Value::Integer(*i),
+                                OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
+                                OwnedSnmpValue::ObjectIdentifier(_) => {
+                                    return Err("SET of ObjectIdentifier is unsupported".to_string())
+                                },
+                                OwnedSnmpValue::Null => Value::Null,
+                                OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
+                                OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
+                                OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
+                                OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
+                            };
 
-                    match session.set(&[(&target_oid, snmp_val)]) {
-                        Ok(mut response) => {
-                            if let Some((resp_oid, val)) = response.varbinds.next() {
-                                let oid_vec = oid_to_vec(&resp_oid);
-                                SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None }
-                            } else {
-                                SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("No varbinds".to_string()) }
+                            match session.set(&[(&target_oid, snmp_val)]) {
+                                Ok(mut response) => {
+                                    if let Some((resp_oid, val)) = response.varbinds.next() {
+                                        let oid_vec = oid_to_vec(&resp_oid);
+                                        Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None })
+                                    } else {
+                                        Err("No varbinds".to_string())
+                                    }
+                                }
+                                Err(e) => Err(format!("{:?}", e)),
                             }
+                        } else {
+                            Err("Unknown operation".to_string())
                         }
-                        Err(e) => SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("{:?}", e)) },
-                    }
-                } else {
-                    SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("Unknown operation".to_string()) }
-                }
-            });
-            handles.push(handle);
+                    })();
+
+                    let result = match res {
+                        Ok(r) => r,
+                        Err(e) => SnmpResult { success: false, oid: task_oid, value: String::new(), error: Some(e) },
+                    };
+                    let _ = tx.send(result);
+                })
+                .expect("Failed to spawn batch thread");
+            
+            join_handles.push(rx);
         }
-
+        
         let mut results = Vec::new();
-        for handle in handles {
+        for handle in join_handles {
             if let Ok(res) = handle.await {
                 results.push(res);
             }
         }
         results
-
     } else {
         // Sequential Mode
-        tokio::task::spawn_blocking(move || {
-            let mut results = Vec::new();
-            let mut session = match create_session(&creds) {
-                Ok(s) => s,
-                Err(e) => {
-                    for task in tasks {
-                        results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e.clone()) });
-                    }
-                    return results;
-                }
-            };
-
-            for task in tasks {
-                let parsed_oid = match parse_oid(&task.oid) {
-                    Ok(o) => o,
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        
+        std::thread::Builder::new()
+            .name("snmp-seq-batch".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let mut results = Vec::new();
+                let mut session = match create_session(&creds) {
+                    Ok(s) => s,
                     Err(e) => {
-                        results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e) });
-                        continue;
+                        for task in tasks {
+                            results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e.clone()) });
+                        }
+                        let _ = tx.send(results);
+                        return;
                     }
                 };
+
+                for task in tasks {
+                    let res = (|| {
+                        let parsed_oid = parse_oid(&task.oid)?;
+                        let target_oid = Oid::from(&parsed_oid[..]).map_err(|e| format!("Invalid OID: {:?}", e))?;
+                        
+                        if task.operation.to_uppercase() == "GET" {
+                            match session.get(&target_oid) {
+                                Ok(mut response) => {
+                                    if let Some((resp_oid, value)) = response.varbinds.next() {
+                                        let oid_vec = oid_to_vec(&resp_oid);
+                                        Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None })
+                                    } else {
+                                        Err("No varbinds".to_string())
+                                    }
+                                }
+                                Err(e) => Err(format!("{:?}", e)),
+                            }
+                        } else if task.operation.to_uppercase() == "SET" {
+                            let owned_val = parse_owned_value(&task.value_type.clone().unwrap_or_else(|| "s".to_string()), &task.value.clone().unwrap_or_default())?;
+                            let snmp_val = match &owned_val {
+                                OwnedSnmpValue::Integer(i) => Value::Integer(*i),
+                                OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
+                                OwnedSnmpValue::ObjectIdentifier(_) => {
+                                    return Err("SET of ObjectIdentifier is unsupported".to_string())
+                                },
+                                OwnedSnmpValue::Null => Value::Null,
+                                OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
+                                OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
+                                OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
+                                OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
+                            };
+
+                            match session.set(&[(&target_oid, snmp_val)]) {
+                                Ok(mut response) => {
+                                    if let Some((resp_oid, val)) = response.varbinds.next() {
+                                        let oid_vec = oid_to_vec(&resp_oid);
+                                        Ok(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None })
+                                    } else {
+                                        Err("No varbinds".to_string())
+                                    }
+                                }
+                                Err(e) => Err(format!("{:?}", e)),
+                            }
+                        } else {
+                            Err("Unknown operation".to_string())
+                        }
+                    })();
+
+                    let result = match res {
+                        Ok(r) => r,
+                        Err(e) => SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e) },
+                    };
+                    results.push(result);
+                }
                 
-                let target_oid = match Oid::from(&parsed_oid[..]) {
-                    Ok(o) => o,
-                    Err(e) => {
-                        results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("Invalid OID: {:?}", e)) });
-                        continue;
-                    }
-                };
-
-                if task.operation.to_uppercase() == "GET" {
-                    match session.get(&target_oid) {
-                        Ok(mut response) => {
-                            if let Some((resp_oid, value)) = response.varbinds.next() {
-                                let oid_vec = oid_to_vec(&resp_oid);
-                                results.push(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&value), error: None });
-                            } else {
-                                results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("No varbinds".to_string()) });
-                            }
-                        }
-                        Err(e) => results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("{:?}", e)) }),
-                    }
-                } else if task.operation.to_uppercase() == "SET" {
-                    let owned_val = match parse_owned_value(&task.value_type.clone().unwrap_or_else(|| "s".to_string()), &task.value.clone().unwrap_or_default()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(e) });
-                            continue;
-                        }
-                    };
-
-                    let snmp_val = match &owned_val {
-                        OwnedSnmpValue::Integer(i) => Value::Integer(*i),
-                        OwnedSnmpValue::OctetString(b) => Value::OctetString(b),
-                        OwnedSnmpValue::ObjectIdentifier(_) => {
-                            results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("SET of ObjectIdentifier is unsupported".to_string()) });
-                            continue;
-                        },
-                        OwnedSnmpValue::Null => Value::Null,
-                        OwnedSnmpValue::IpAddress(ip) => Value::IpAddress(*ip),
-                        OwnedSnmpValue::Counter32(c) => Value::Counter32(*c),
-                        OwnedSnmpValue::Unsigned32(c) => Value::Unsigned32(*c),
-                        OwnedSnmpValue::Timeticks(c) => Value::Timeticks(*c),
-                    };
-
-                    match session.set(&[(&target_oid, snmp_val)]) {
-                        Ok(mut response) => {
-                            if let Some((resp_oid, val)) = response.varbinds.next() {
-                                let oid_vec = oid_to_vec(&resp_oid);
-                                results.push(SnmpResult { success: true, oid: format_oid(&oid_vec), value: format_snmp_value(&val), error: None });
-                            } else {
-                                results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some("No varbinds".to_string()) });
-                            }
-                        }
-                        Err(e) => results.push(SnmpResult { success: false, oid: task.oid, value: String::new(), error: Some(format!("{:?}", e)) }),
-                    }
-                }
-            }
-            results
-        }).await.unwrap_or_else(|_| vec![])
+                let _ = tx.send(results);
+            })
+            .expect("Failed to spawn sequential batch thread");
+            
+        rx.await.unwrap_or_else(|_| vec![])
     }
 }

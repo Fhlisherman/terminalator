@@ -1,5 +1,5 @@
 import { X, RotateCcw, Palette, Monitor, LayoutPanelLeft, Terminal } from 'lucide-react';
-import { useSettings, AccentColor, TerminalFont, AppTheme, ACCENT_PALETTE } from '../contexts/SettingsContext';
+import { useSettings, AccentColor, AppTheme, ACCENT_PALETTE } from '../contexts/SettingsContext';
 
 interface Props { onClose: () => void; }
 
@@ -20,14 +20,7 @@ const THEMES: { id: AppTheme; label: string; desc: string; preview: string[] }[]
   { id: 'cyberpunk',  label: 'Cyberpunk',  desc: 'Neon-on-void — high contrast',     preview: ['#0a0015', '#130025', '#ff00ff'] },
 ];
 
-const FONTS: { id: TerminalFont; label: string; stack: string }[] = [
-  { id: 'JetBrains Mono',  label: 'JetBrains Mono',  stack: "'JetBrains Mono', monospace"  },
-  { id: 'Fira Code',       label: 'Fira Code',        stack: "'Fira Code', monospace"        },
-  { id: 'Source Code Pro', label: 'Source Code Pro',  stack: "'Source Code Pro', monospace"  },
-  { id: 'Menlo',           label: 'Menlo',            stack: "Menlo, monospace"               },
-  { id: 'Monaco',          label: 'Monaco',           stack: "Monaco, monospace"              },
-  { id: 'monospace',       label: 'System Mono',      stack: 'monospace'                      },
-];
+
 
 function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
@@ -167,29 +160,8 @@ export default function SettingsPanel({ onClose }: Props) {
             </div>
           </Section>
 
-          {/* Terminal font */}
-          <Section icon={<Terminal size={14} />} title="Terminal Font">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '16px' }}>
-              {FONTS.map(f => {
-                const active = settings.termFont === f.id;
-                return (
-                  <button key={f.id} onClick={() => update({ termFont: f.id as TerminalFont })}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      padding: '7px 12px', borderRadius: '7px', border: '1px solid',
-                      borderColor: active ? 'var(--accent-primary)' : 'transparent',
-                      background: active ? 'var(--accent-glow)' : 'transparent',
-                      cursor: 'pointer', transition: 'all 0.12s',
-                    }}
-                  >
-                    <span style={{ fontFamily: f.stack, fontSize: '0.9rem', color: 'var(--label-primary)' }}>{f.label}</span>
-                    <span style={{ fontFamily: f.stack, fontSize: '0.75rem', color: 'var(--label-tertiary)' }}>
-                      if (x &gt; 0) &#123; return x; &#125;
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+          {/* Terminal */}
+          <Section icon={<Terminal size={14} />} title="Terminal">
             <Slider label="Font Size" value={settings.termFontSize} min={10} max={22} unit="px"
               onChange={v => update({ termFontSize: v })} />
             <Slider label="Terminal Padding" value={settings.terminalPadding} min={0} max={24} unit="px"

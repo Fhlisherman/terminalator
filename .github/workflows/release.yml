@@ -2,11 +2,45 @@ name: 'publish'
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.check.outputs.changed }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if version tag exists
+        id: check
+        run: |
+          VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "Triggered by tag push. Proceeding with build."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
+              echo "Tag v$VERSION already exists on remote origin. Skipping build."
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "Tag v$VERSION does not exist on remote origin. Proceeding with build."
+              echo "changed=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
   publish-tauri:
+    needs: check-version
+    if: needs.check-version.outputs.version_changed == 'true'
     permissions:
       contents: write
     strategy:
@@ -63,6 +97,6 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Terminalator v__VERSION__'
           releaseBody: 'See the assets below to download and install this version.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

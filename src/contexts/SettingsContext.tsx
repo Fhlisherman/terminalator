@@ -1,13 +1,11 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 
 export type AccentColor = 'indigo' | 'blue' | 'teal' | 'green' | 'orange' | 'rose';
-export type TerminalFont = 'Menlo' | 'Monaco' | 'JetBrains Mono' | 'Fira Code' | 'Source Code Pro' | 'monospace';
 export type AppTheme = 'dark' | 'darker' | 'graphite' | 'night-owl' | 'cyberpunk';
 
 export interface Settings {
   accentColor: AccentColor;
   termFontSize: number;
-  termFont: TerminalFont;
   sidebarWidth: number;
   appTheme: AppTheme;
   showHiddenFiles: boolean;
@@ -116,7 +114,6 @@ export const TERMINAL_THEMES: Record<AppTheme, XTermTheme> = {
 const DEFAULT_SETTINGS: Settings = {
   accentColor: 'indigo',
   termFontSize: 14,
-  termFont: 'JetBrains Mono',
   sidebarWidth: 260,
   appTheme: 'dark',
   showHiddenFiles: false,
@@ -158,7 +155,7 @@ export function applyCssVars(settings: Settings) {
   root.style.setProperty('--label-tertiary',  theme.labelTer);
 
   // Typography
-  root.style.setProperty('--term-font',      settings.termFont);
+  root.style.setProperty('--term-font',      "'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace");
   root.style.setProperty('--term-font-size', `${settings.termFontSize}px`);
   root.style.setProperty('--sidebar-width',  `${settings.sidebarWidth}px`);
   root.style.setProperty('--term-padding',   `${settings.terminalPadding}px`);
