@@ -120,8 +120,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.release.outputs.version) }}
-          releaseName: 'Terminalator ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.release.outputs.version) }}'
+          tagName: "${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.release.outputs.version) }}"
+          releaseName: "Terminalator ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.release.outputs.version) }}"
           releaseBody: 'See the assets below to download and install this version.'
           releaseDraft: false
           prerelease: false
